@@ -22,12 +22,13 @@ except ImportError:
 
 class DataLoader:
     def __init__(self, task_dir, active_PPR=False, sampling_percentage=0.85,
-                 PPR_alpha=0.85, max_iter=100):
+                 PPR_alpha=0.85, max_iter=100, ppr_batch_size=64):
         self.task_dir = task_dir
         self.active_PPR = active_PPR and PPR_AVAILABLE
         self.sampling_percentage = sampling_percentage
         self.PPR_alpha = PPR_alpha
         self.max_iter = max_iter
+        self.ppr_batch_size = ppr_batch_size
 
         # ---- read user-item interactions ----
         if any(tag in task_dir for tag in
@@ -132,9 +133,9 @@ class DataLoader:
                 self.ppr_cache = {}
 
         if len(self.ppr_cache) < self.n_nodes:
-            print(f'==> Computing PPR for all {self.n_nodes} nodes (keeping top-{self.ppr_topk})...')
+            print(f'==> Computing PPR for all {self.n_nodes} nodes (keeping top-{self.ppr_topk}, batch_size={self.ppr_batch_size})...')
             all_nodes = list(range(self.n_nodes))
-            ppr_scores = self.ppr_sampler.sample_nodes(seeds=all_nodes)
+            ppr_scores = self.ppr_sampler.sample_nodes(seeds=all_nodes, batch_size=self.ppr_batch_size)
             for node in tqdm(all_nodes, desc='Caching top-K PPR'):
                 scores = ppr_scores[node]
                 topk_idx = np.argpartition(scores, -self.ppr_topk)[-self.ppr_topk:]

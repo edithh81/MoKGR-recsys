@@ -30,6 +30,8 @@ parser.add_argument('--sampling_percentage', type=float, default=0.85)
 parser.add_argument('--PPR_alpha', type=float, default=0.85)
 parser.add_argument('--max_iter', type=int, default=100)
 parser.add_argument('--active_PPR', action="store_true")
+parser.add_argument('--ppr_batch_size', type=int, default=64,
+                    help='Batch size for parallel PPR computation on GPU (higher=faster, more VRAM)')
 # MoE for hops
 parser.add_argument('--num_experts', type=int, default=3)
 parser.add_argument('--min_hop', type=int, default=2)
@@ -73,7 +75,8 @@ if __name__ == '__main__':
         active_PPR=args.active_PPR,
         sampling_percentage=args.sampling_percentage,
         PPR_alpha=args.PPR_alpha,
-        max_iter=args.max_iter
+        max_iter=args.max_iter,
+        ppr_batch_size=args.ppr_batch_size
     )
     opts.n_ent = loader.n_ent
     opts.n_rel = loader.n_rel
