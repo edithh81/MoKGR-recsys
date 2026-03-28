@@ -13,7 +13,6 @@ from collections import defaultdict
 
 try:
     from PPR_sampler import PPRSampler
-    import cupy as cp
     import pickle
     from tqdm import tqdm
     PPR_AVAILABLE = True
@@ -115,8 +114,11 @@ class DataLoader:
             PPR_alpha=self.PPR_alpha,
             max_iter=self.max_iter
         )
+        # Top-K PPR entries to keep per node (enough for subgraph construction)
+        self.ppr_topk = max(1, int(self.n_nodes * self.sampling_percentage))
+
         dataset_name = os.path.basename(os.path.normpath(self.task_dir))
-        self.cache_file = f'{dataset_name}_ppr_cache.pkl'
+        self.cache_file = f'{dataset_name}_ppr_top{self.ppr_topk}_cache.pkl'
         self.ppr_cache = {}
 
         if os.path.exists(self.cache_file):
@@ -124,19 +126,22 @@ class DataLoader:
                 print(f'==> Loading PPR cache from {self.cache_file}...')
                 with open(self.cache_file, 'rb') as f:
                     self.ppr_cache = pickle.load(f)
-                print('==> PPR cache loaded.')
+                print(f'==> PPR cache loaded ({len(self.ppr_cache)} nodes, top-{self.ppr_topk} per node).')
             except (EOFError, pickle.UnpicklingError):
                 print(f"Warning: Cache file corrupted. Recomputing.")
                 self.ppr_cache = {}
 
         if len(self.ppr_cache) < self.n_nodes:
-            print(f'==> Computing PPR for all {self.n_nodes} nodes...')
+            print(f'==> Computing PPR for all {self.n_nodes} nodes (keeping top-{self.ppr_topk})...')
             all_nodes = list(range(self.n_nodes))
             ppr_scores = self.ppr_sampler.sample_nodes(seeds=all_nodes)
-            self.ppr_cache = {
-                node: {'ppr_scores': ppr_scores[node]}
-                for node in tqdm(all_nodes, desc='Caching PPR scores')
-            }
+            for node in tqdm(all_nodes, desc='Caching top-K PPR'):
+                scores = ppr_scores[node]
+                topk_idx = np.argpartition(scores, -self.ppr_topk)[-self.ppr_topk:]
+                self.ppr_cache[node] = {
+                    'indices': topk_idx.astype(np.int32),
+                    'scores': scores[topk_idx].astype(np.float32),
+                }
             print("==> Saving PPR cache...")
             with open(self.cache_file, 'wb') as f:
                 pickle.dump(self.ppr_cache, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -151,11 +156,11 @@ class DataLoader:
         return node_to_edges
 
     def build_subgraph(self, subs, k, triples):
-        combined_scores = cp.zeros(self.n_nodes, dtype=cp.float32)
+        combined_scores = np.zeros(self.n_nodes, dtype=np.float32)
         for sub in subs:
-            combined_scores += cp.array(self.ppr_cache[sub]['ppr_scores'])
-        combined_scores_cpu = cp.asnumpy(combined_scores)
-        top_k_nodes = np.argsort(combined_scores_cpu)[-k:]
+            entry = self.ppr_cache[sub]
+            combined_scores[entry['indices']] += entry['scores']
+        top_k_nodes = np.argpartition(combined_scores, -k)[-k:]
         subgraph_nodes_set = set(subs.tolist()) | set(top_k_nodes.tolist())
 
         node_to_edges = self._build_node_to_edges(triples)
