@@ -142,21 +142,31 @@ class DataLoader:
                 pickle.dump(self.ppr_cache, f, protocol=pickle.HIGHEST_PROTOCOL)
             print("==> PPR cache saved.")
 
+    def _build_node_to_edges(self, triples):
+        """Build mapping from node to its outgoing edges."""
+        node_to_edges = defaultdict(list)
+        for triple in triples:
+            h, r, t = triple[0], triple[1], triple[2]
+            node_to_edges[h].append((h, r, t))
+        return node_to_edges
+
     def build_subgraph(self, subs, k, triples):
         combined_scores = cp.zeros(self.n_nodes, dtype=cp.float32)
         for sub in subs:
             combined_scores += cp.array(self.ppr_cache[sub]['ppr_scores'])
         combined_scores_cpu = cp.asnumpy(combined_scores)
         top_k_nodes = np.argsort(combined_scores_cpu)[-k:]
-        subgraph_nodes = set(subs.tolist()) | set(top_k_nodes.tolist())
-        subgraph_nodes_set = subgraph_nodes
+        subgraph_nodes_set = set(subs.tolist()) | set(top_k_nodes.tolist())
 
+        node_to_edges = self._build_node_to_edges(triples)
         subgraph_edges = []
-        for h, r, t in triples:
-            if h in subgraph_nodes_set and t in subgraph_nodes_set:
-                subgraph_edges.append([h, r, t])
+        for node in subgraph_nodes_set:
+            if node in node_to_edges:
+                for edge in node_to_edges[node]:
+                    if edge[2] in subgraph_nodes_set:
+                        subgraph_edges.append(list(edge))
 
-        return subgraph_nodes, subgraph_edges
+        return subgraph_nodes_set, subgraph_edges
 
     # ------------------------------------------------------------------
     # reading helpers
@@ -383,6 +393,38 @@ class DataLoader:
     # ------------------------------------------------------------------
     # batch helpers
     # ------------------------------------------------------------------
+    def _rebuild_graph_ppr(self, subs, triples, target='train'):
+        """Rebuild KG/M_sub using PPR subgraph for the current batch."""
+        k = max(1, int(self.n_nodes * self.sampling_percentage))
+        subgraph_nodes, subgraph_edges = self.build_subgraph(subs, k, triples)
+
+        self_rel_id = 2 * self.n_rel + 2
+        idd = np.column_stack([
+            np.arange(self.n_nodes),
+            np.full(self.n_nodes, self_rel_id),
+            np.arange(self.n_nodes),
+        ])
+        if len(subgraph_edges) == 0:
+            subgraph_edges_array = np.zeros((0, 3), dtype=int)
+        else:
+            subgraph_edges_array = np.array(subgraph_edges)
+
+        kg = np.concatenate([subgraph_edges_array, idd], 0)
+        n_fact = len(kg)
+        m_sub = csr_matrix(
+            (np.ones(n_fact), (np.arange(n_fact), kg[:, 0])),
+            shape=(n_fact, self.n_nodes),
+        )
+
+        if target == 'train':
+            self.KG = kg
+            self.n_fact = n_fact
+            self.M_sub = m_sub
+        else:
+            self.tKG = kg
+            self.tn_fact = n_fact
+            self.tM_sub = m_sub
+
     def get_batch(self, batch_idx, data='train'):
         if data == 'train':
             query  = np.array(self.train_q)
@@ -392,6 +434,10 @@ class DataLoader:
             rels = query[batch_idx, 1]
             pos = answer[batch_idx[0]:batch_idx[-1] + 1]
             neg = wrongs[batch_idx[0]:batch_idx[-1] + 1]
+
+            if self.active_PPR:
+                self._rebuild_graph_ppr(subs, self.fact_data, target='train')
+
             return subs, rels, pos, neg
         else:
             query  = np.array(self.test_q)
@@ -401,6 +447,10 @@ class DataLoader:
             objs = np.zeros((len(batch_idx), self.n_nodes))
             for i in range(len(batch_idx)):
                 objs[i][answer[batch_idx[i]]] = 1
+
+            if self.active_PPR:
+                self._rebuild_graph_ppr(subs, self.known_data, target='test')
+
             return subs, rels, objs
 
     # ------------------------------------------------------------------
